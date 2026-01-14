@@ -2,7 +2,7 @@
 
 This repository contains the code and workflow used for the research presented in the paper:
 
-> **Point-DeepONet: A Deep Operator Network Integrating PointNet for Nonlinear Analysis of Non-Parametric 3D Geometries and Load Conditions**  
+> **Point-DeepONet: Predicting Nonlinear Fields on Non-Parametric Geometries under Variable Load Conditions**  
 > Jangseop Park and Namwoo Kang.
 
 **Abstract:**  
