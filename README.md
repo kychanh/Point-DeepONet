@@ -220,16 +220,16 @@ Use the `experiments` and `figures` directories to assess model performance and 
 - **Hardware Requirements:**  
   Training large models requires GPUs with substantial memory (e.g., NVIDIA A100).
 
-<!-- - **Citations:**  
   If you find this code useful, please cite our paper:
   
   ```bibtex
-  @article{park2024point,
-    title={Point-DeepONet: A Deep Operator Network Integrating PointNet for Nonlinear Analysis of Non-Parametric 3D Geometries and Load Conditions},
-    author={Park, Jangseop and Kang, Namwoo},
-    journal={Computer Methods in Applied Mechanics and Engineering},
-    year={2024}
-  } -->
+  @article{park2026point,
+  title={Point-DeepONet: Predicting Nonlinear Fields on Non-Parametric Geometries under Variable Load Conditions},
+  author={Park, Jangseop and Kang, Namwoo},
+  journal={Neural Networks},
+  pages={108560},
+  year={2026},
+  publisher={Elsevier}}
 
 
 ## Contact
