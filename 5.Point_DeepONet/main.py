@@ -625,7 +625,7 @@ def train_model(model, scheduler, optimizer, args, output_scalers, experiment_di
     )
     total_training_time = time.time() - start_time
 
-    scheduler.step(losshistory.loss_test[-1])
+    scheduler.step(float(np.sum(losshistory.loss_test[-1])))
     torch.save(model.net.state_dict(), f'{experiment_dir}/model_final.pth')
     
     total_params = sum(p.numel() for p in model.net.parameters() if p.requires_grad)
@@ -660,7 +660,7 @@ def plot_r2_scatter(true_vals, pred_vals, comp, dataset_type, experiment_dir):
     plt.plot([min_val, max_val], [min_val, max_val], 'r--', label='Ideal Fit')
     plt.xlabel(f'True {comp}')
     plt.ylabel(f'Predicted {comp}')
-    plt.title(f'{dataset_type.capitalize()} Dataset: {comp} Prediction vs True\nR짼 = {r2:.3f}')
+    plt.title(f'{dataset_type.capitalize()} Dataset: {comp} Prediction vs True\nR2 = {r2:.3f}')
     plt.legend(loc="upper left")
     plt.tight_layout()
     plt.savefig(os.path.join(experiment_dir, f'{dataset_type}_scatter_{comp}.jpg'), dpi=300)
@@ -747,7 +747,7 @@ def main():
     overall_plots_dir = os.path.join(experiment_dir, 'overall_plots')
     os.makedirs(overall_plots_dir, exist_ok=True)
 
-    base = '/root/Example3/data/npy/'
+    base = '/workspace/Point-DeepONet/data/npy/'
     targets_full = np.load(base + 'targets.npz', allow_pickle=True)
     xyzd_full = np.load(base + 'xyzdmlc.npz', allow_pickle=True)
 
@@ -819,7 +819,7 @@ def main():
             all_metrics[direction][comp]['true'].extend(outputs[:, i])
             all_metrics[direction][comp]['pred'].extend(u_pred[:, i])
 
-        vtk_filepath = f'/root/Example3/data/VolumeMesh/{filename}.vtk'
+        vtk_filepath = f'/workspace/Point-DeepONet/data/VolumeMesh/{filename}.vtk'
 
         if os.path.exists(vtk_filepath):
             try:
@@ -861,7 +861,7 @@ def main():
                 f_rmse.write(f"{avg_rmse}")
             with open(os.path.join(overall_metrics_all_dir, f'{direction}_{comp}_R2.txt'), 'w') as f_r2:
                 f_r2.write(f"{avg_r2:.3f}")
-            logging.info(f"Overall Metrics for {direction} {comp}: MAE={avg_mae:.4f}, RMSE={avg_rmse:.4f}, R짼={avg_r2:.4f}")
+            logging.info(f"Overall Metrics for {direction} {comp}: MAE={avg_mae:.4f}, RMSE={avg_rmse:.4f}, R2={avg_r2:.4f}")
 
     for direction, comps in all_metrics.items():
         for comp, values in comps.items():
