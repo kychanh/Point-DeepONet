@@ -261,13 +261,14 @@ def save_global_colorbar(a_min, a_max, label, out_path):
 
 def visualize_generated_surfaces(
     surface_paths,
+    case_key,
     out_dir,
     direction,
     component=3,            # 0:ux 1:uy 2:uz 3:vm 4:sdf
     num_samples=10,
     opacity=1.0,
     cmap="jet",
-    use_clip=True
+    use_clip=True,
 ):
     """
     Robust notebook/headless visualization:
@@ -337,7 +338,7 @@ def visualize_generated_surfaces(
         plotter.add_text(txt, font_size=10, position="upper_left", shadow=True)
         plotter.add_axes()
 
-    save_path = os.path.join(out_dir, f"generated_{direction}_{scalar_name}.png")
+    save_path = os.path.join(out_dir, f"generated_{case_key}_{scalar_name}.png")
     print("[DEBUG] about to screenshot ->", save_path)
 
     # Render + screenshot
@@ -492,7 +493,7 @@ def main():
         grid_i.point_data["uz"] = field_orig[:, 2].astype(np.float32)
         grid_i.point_data["vm"] = field_orig[:, 3].astype(np.float32)
 
-        grid_path = os.path.join(args.out_dir, f"sample_{i:03d}_grid.vtk")
+        grid_path = os.path.join(args.out_dir, f"{args.case_key}_sample_{i:03d}_grid.vtk")
         grid_i.save(grid_path)
 
         # robust iso selection if zero is out of range
@@ -502,7 +503,7 @@ def main():
             print(f"[sample {i}] iso {args.iso} out of range; using {iso:.6f}")
 
         surf = grid_i.contour(isosurfaces=[iso], scalars="sdf")
-        surf_path = os.path.join(args.out_dir, f"sample_{i:03d}_surface.vtk")
+        surf_path = os.path.join(args.out_dir, f"{args.case_key}_sample_{i:03d}_surface.vtk")
         surf.save(surf_path)
         surface_paths.append(surf_path)
 
@@ -514,6 +515,7 @@ def main():
     return visualize_generated_surfaces(
         surface_paths=surface_paths,
         out_dir=args.out_dir,
+        case_key=args.case_key,
         direction=direction,
         component=args.viz_component,
         num_samples=args.viz_num,

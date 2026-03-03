@@ -343,11 +343,14 @@ class TripleCartesianProd(Data):
         self.num_train_samples = self.train_x[0].shape[0]
         self.sampler = BatchSampler(self.num_train_samples, shuffle=True)
         self.lambda_nf = lambda_nf
+        self._log_every = 100      # 100 step마다 출력
+        self._step = 0
 
     # main.py 안 TripleCartesianProd.losses 를 이걸로 교체
     def losses(self, targets, outputs, loss_fn, inputs, model, aux=None):
         # targets: (B,N,5) = field(4) + sdf(1)
         # outputs: (B,N,5)
+        self._step += .5
 
         u_gt = targets[:, :, :4]
         d_gt = targets[:, :, 4]
@@ -391,7 +394,22 @@ class TripleCartesianProd(Data):
         # weights (고정)
         lambda_sdf = 1.0
         lambda_eik = 0.1
-        return loss_field + lambda_sdf * loss_sdf_data + lambda_eik * loss_eik + loss_zero
+
+        total = loss_field + lambda_sdf * loss_sdf_data + lambda_eik * loss_eik + loss_zero
+
+        if (self._step % self._log_every) == 0:
+            # detach해서 숫자만
+            lf = float(loss_field.detach().cpu())
+            ls = float(loss_sdf_data.detach().cpu())
+            lz = float(loss_zero.detach().cpu()) if isinstance(loss_zero, torch.Tensor) else float(loss_zero)
+            le = float(loss_eik.detach().cpu())
+            lt = float(total.detach().cpu())
+
+            logging.info(f"[loss step {self._step}] total={lt:.6e} | "
+                f"field={lf:.3e} sdf={ls:.3e} zero={lz:.3e} eik={le:.3e} "
+                f"(w_sdf={lambda_sdf}, w_eik={lambda_eik})")
+
+        return total
 
     def train_next_batch(self, batch_size=None):
         if not hasattr(self, "_step"):
