@@ -235,7 +235,7 @@ def calculate_r2(true_vals, pred_vals):
 
 
 def load_and_preprocess_data(args, dir_base_save_model):
-    tmp = np.load(f'{args.dir_base_load_data}/Rpt{str(args.RUN)}_N{str(args.N_pt)}.npz')
+    tmp = np.load(f'{args.dir_base_load_data}/Rpt{str(0)}_N{str(args.N_pt)}.npz')
 
     branch_condition_input = process_branch_condition_input(
         args.branch_condition_input_components,
@@ -410,6 +410,57 @@ class TripleCartesianProd(Data):
                 f"(w_sdf={lambda_sdf}, w_eik={lambda_eik})")
 
         return total
+
+    def losses(self, targets, outputs, loss_fn, inputs, model, aux=None):
+        # targets: (B,N,5) = u(4) + d(1)
+        u_gt = targets[:, :, :4]
+        d_gt = targets[:, :, 4]
+        u_pred = outputs[:, :, :4]
+        d_pred = outputs[:, :, 4]
+
+        # 1) field MSE (원래대로)
+        loss_field = torch.mean((u_pred - u_gt) ** 2)
+
+        # 2) sdf supervised: MSE (원래대로)
+        loss_sdf = torch.mean((d_pred - d_gt) ** 2)
+
+        # 3) eikonal (그대로 유지)
+        B = targets.shape[0]
+        Ne = 2048
+        x_eik = (torch.rand(B, Ne, 3, device=outputs.device) * 2.0 - 1.0).requires_grad_(True)
+        x_eik_enc = model.net.trunk_encoding(x_eik.reshape(-1, 3)).reshape(B, Ne, -1)
+
+        latent = getattr(model.net, "_cached_latent", None)
+        if latent is None:
+            latent = model.net.encoder(inputs[1])
+
+        # IMPORTANT: 아래 shape decoder 출력은 "SDF-SCALAR 적용된 값"이어야 함 (B에서 수정할 거라 자동으로 맞음)
+        d_eik = model.net.shape_decoder(latent, x_eik_enc).squeeze(-1)  # (B,Ne)
+
+        grad = torch.autograd.grad(
+            outputs=d_eik.sum(),
+            inputs=x_eik,
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True,
+        )[0]
+        loss_eik = ((grad.norm(dim=-1) - 1.0) ** 2).mean()
+
+        # weights (초기 권장값)
+        lambda_sdf = 2.0
+        lambda_eik = 0.1
+
+        if (self._step % self._log_every) == 0:
+            # detach해서 숫자만
+            lf = float(loss_field.detach().cpu())
+            ls = float(loss_sdf.detach().cpu())
+            le = float(loss_eik.detach().cpu())
+
+            logging.info(f"[loss] "
+                f"field={lf:.3e} sdf={ls:.3e} eik={le:.3e} "
+                f"(w_sdf={lambda_sdf}, w_eik={lambda_eik})")
+
+        return loss_field + lambda_sdf * loss_sdf + lambda_eik * loss_eik
 
     def train_next_batch(self, batch_size=None):
         if not hasattr(self, "_step"):
