@@ -447,8 +447,8 @@ class TripleCartesianProd(Data):
         loss_eik = ((grad.norm(dim=-1) - 1.0) ** 2).mean()
 
         # weights (초기 권장값)
-        lambda_sdf = 2.0
-        lambda_eik = 0.1
+        lambda_sdf = 3.0
+        lambda_eik = 0.8
 
         if (self._step % self._log_every) == 0:
             # detach해서 숫자만
