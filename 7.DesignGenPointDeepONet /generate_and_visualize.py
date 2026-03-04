@@ -499,7 +499,9 @@ def main():
         # robust iso selection if zero is out of range
         iso = args.iso
         if not (sdf_np.min() <= iso <= sdf_np.max()):
+            print(sdf_np.min() , sdf_np.max())
             iso = 0.5 * (sdf_np.min() + sdf_np.max())
+            iso = 1.2
             print(f"[sample {i}] iso {args.iso} out of range; using {iso:.6f}")
 
         surf = grid_i.contour(isosurfaces=[iso], scalars="sdf")

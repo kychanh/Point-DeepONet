@@ -161,6 +161,28 @@ def process_branch_pointnet_input(input_components, tmp):
     branch_pointnet_input = tmp['a'][:, :, selected_indices].astype(np.float32)
     return branch_pointnet_input
 
+def process_branch_pointnet_input_inside_xyz(tmp, N_pt):
+    """
+    Encoder 입력용 point cloud는 inside 점만 사용.
+    inside 여부는 tmp['b']가 finite인지로 판단.
+    return: (N_case, N_pt, 3)
+    """
+    a = tmp['a']  # (N_case, N_pt, 9)
+    b = tmp['b']  # (N_case, N_pt, 4) with NaNs outside
+    N_case = a.shape[0]
+
+    out = np.zeros((N_case, N_pt, 3), dtype=np.float32)
+    for i in range(N_case):
+        mask_in = np.isfinite(b[i]).all(axis=1)  # (N_pt,)
+        xyz_in = a[i, mask_in, :3]
+        if xyz_in.shape[0] == 0:
+            # worst-case fallback: just use all xyz
+            xyz_in = a[i, :, :3]
+        replace = xyz_in.shape[0] < N_pt
+        idx = np.random.choice(xyz_in.shape[0], N_pt, replace=replace)
+        out[i] = xyz_in[idx].astype(np.float32)
+    return out
+
 
 def process_trunk_input(input_components, tmp):
     input_mapping = {'x': 0, 'y': 1, 'z': 2, 'd': 3, 'm': 4, 'l': 5, 'c': [6, 7, 8]}
@@ -173,11 +195,14 @@ def process_trunk_input(input_components, tmp):
     trunk_input = tmp['a'][:, :, selected_indices].astype(np.float32)
     return trunk_input
 
-
 def process_output(output_components, output_vals, identifiers):
+    """
+    output_vals: (N_case, N_pt, 4) but may contain NaNs on outside points.
+    We clip ONLY finite entries.
+    """
     output_mapping = {'x': 0, 'y': 1, 'z': 2, 's': 3}
     selected_indices = [output_mapping[comp] for comp in output_components]
-    combined_output = output_vals[:, :, selected_indices]
+    combined_output = output_vals[:, :, selected_indices].copy()
 
     unique_directions = set(id.split('_')[0] for id in identifiers)
     clipping_ranges_dict = {direction: get_clipping_ranges_for_direction(direction) for direction in unique_directions}
@@ -187,14 +212,15 @@ def process_output(output_components, output_vals, identifiers):
         if not indices:
             continue
         indices = np.array(indices)
+
         for j, idx in enumerate(selected_indices):
             min_val, max_val = clipping_ranges[idx]
-            combined_output[indices, :, j] = np.clip(combined_output[indices, :, j], min_val, max_val)
+            block = combined_output[indices, :, j]
+            mask = np.isfinite(block)
+            block[mask] = np.clip(block[mask], min_val, max_val)
+            combined_output[indices, :, j] = block
 
-    if combined_output.shape[-1] == 1:
-        combined_output = combined_output.squeeze(-1)
-
-    return combined_output
+    return combined_output  # keep NaNs
 
 
 def map_keys_to_indices(keys, all_keys):
@@ -234,104 +260,109 @@ def calculate_r2(true_vals, pred_vals):
     return r2
 
 
-def load_and_preprocess_data(args, dir_base_save_model):
-    tmp = np.load(f'{args.dir_base_load_data}/Rpt{str(0)}_N{str(args.N_pt)}.npz')
+def fit_minmax_scaler_nan(X, feature_range=(-1, 1)):
+    """Fit MinMaxScaler ignoring rows with NaN."""
+    scaler = MinMaxScaler(feature_range=feature_range)
+    X2 = X.reshape(-1, X.shape[-1])
+    mask = np.isfinite(X2).all(axis=1)
+    scaler.fit(X2[mask])
+    return scaler
 
-    branch_condition_input = process_branch_condition_input(
-        args.branch_condition_input_components,
-        tmp
-    )
-    branch_pointnet_input = process_branch_pointnet_input('xyz', tmp)
-    trunk_input = process_trunk_input(
-        args.trunk_input_components,
-        tmp
-    )
-    combined_output = process_output(args.output_components, tmp['b'], tmp['c'])
+def transform_minmax_nan(scaler, X):
+    """Transform while keeping NaNs as NaNs."""
+    orig_shape = X.shape
+    X2 = X.reshape(-1, orig_shape[-1]).copy()
+    mask = np.isfinite(X2).all(axis=1)
+    X2[mask] = scaler.transform(X2[mask])
+    return X2.reshape(orig_shape)
+
+
+def load_and_preprocess_data(args, dir_base_save_model):
+    # NOTE: Ext file name
+    tmp = np.load(f'{args.dir_base_load_data}/Ext_Rpt{str(0)}_N{str(args.N_pt)}.npz')
+
+    branch_condition_input = process_branch_condition_input(args.branch_condition_input_components, tmp)
+
+    # IMPORTANT: encoder input uses inside-only xyz
+    branch_pointnet_input = process_branch_pointnet_input_inside_xyz(tmp, args.N_pt)
+
+    trunk_input = process_trunk_input(args.trunk_input_components, tmp)  # this includes xyzd for ALL points
+    combined_output = process_output(args.output_components, tmp['b'], tmp['c'])  # field with NaNs outside
 
     scaler_fun = partial(MinMaxScaler, feature_range=(-1, 1))
 
+    # branch scaler (no NaNs)
     branch_scaler = scaler_fun()
     branch_scaler.fit(branch_condition_input)
     branch_condition_input = branch_scaler.transform(branch_condition_input)
 
+    # pointnet scaler (no NaNs)
     pointnet_scaler = scaler_fun()
     ss = branch_pointnet_input.shape
     tmp_pointnet_input = branch_pointnet_input.reshape([ss[0] * ss[1], ss[2]])
     pointnet_scaler.fit(tmp_pointnet_input)
     branch_pointnet_input = pointnet_scaler.transform(tmp_pointnet_input).reshape(ss)
 
+    # trunk scaler (no NaNs; trunk has xyzd for all points)
     trunk_scaler = scaler_fun()
     ss = trunk_input.shape
     tmp_input_trunk = trunk_input.reshape([ss[0] * ss[1], ss[2]])
     trunk_scaler.fit(tmp_input_trunk)
     trunk_input = trunk_scaler.transform(tmp_input_trunk).reshape(ss)
 
-    output_scalers = scaler_fun()
-    ss = combined_output.shape
-    if combined_output.ndim == 3:
-        tmp_output = combined_output.reshape([ss[0] * ss[1], ss[2]])
-    elif combined_output.ndim == 2:
-        tmp_output = combined_output.reshape([ss[0] * ss[1], 1])
-    else:
-        raise ValueError(f"Unexpected number of dimensions: {combined_output.ndim}")
-    output_scalers.fit(tmp_output)
-    combined_output = output_scalers.transform(tmp_output).reshape(ss)
+    # output scaler (NaN-safe fit/transform)
+    output_scalers = fit_minmax_scaler_nan(combined_output, feature_range=(-1, 1))
+    combined_output = transform_minmax_nan(output_scalers, combined_output)
 
+    # save scalers
     pickle.dump(branch_scaler, open(f'{dir_base_save_model}/branch_scaler.pkl', 'wb'))
     pickle.dump(pointnet_scaler, open(f'{dir_base_save_model}/pointnet_scaler.pkl', 'wb'))
     pickle.dump(trunk_scaler, open(f'{dir_base_save_model}/trunk_scaler.pkl', 'wb'))
     pickle.dump(output_scalers, open(f'{dir_base_save_model}/output_scaler.pkl', 'wb'))
 
+    # split indices (same)
     if args.split_method == 'random':
         split_file = f'../data/npy/combined_{args.N_samples}_split_random_train_valid.npz'
     else:
         split_file = f'../data/npy/combined_{args.N_samples}_split_mass_train_valid.npz'
     split_data = np.load(split_file)
+
     train_case = map_keys_to_indices(split_data['train'], np.array([key for key in tmp['c']]))
-    test_case = map_keys_to_indices(split_data['valid'], np.array([key for key in tmp['c']]))
+    test_case  = map_keys_to_indices(split_data['valid'], np.array([key for key in tmp['c']]))
 
     train_case_file = tmp['c'][train_case]
-    test_case_file = tmp['c'][test_case]
+    test_case_file  = tmp['c'][test_case]
 
+    # split
     branch_condition_input_train = branch_condition_input[train_case].astype(np.float32)
-    branch_condition_input_test = branch_condition_input[test_case].astype(np.float32)
-    branch_pointnet_input_train = branch_pointnet_input[train_case].astype(np.float32)
-    branch_pointnet_input_test = branch_pointnet_input[test_case].astype(np.float32)
+    branch_condition_input_test  = branch_condition_input[test_case].astype(np.float32)
+    branch_pointnet_input_train  = branch_pointnet_input[train_case].astype(np.float32)
+    branch_pointnet_input_test   = branch_pointnet_input[test_case].astype(np.float32)
     trunk_input_train = trunk_input[train_case].astype(np.float32)
-    trunk_input_test = trunk_input[test_case].astype(np.float32)
-    s_train = combined_output[train_case].astype(np.float32)
-    s_test = combined_output[test_case].astype(np.float32)
+    trunk_input_test  = trunk_input[test_case].astype(np.float32)
 
-    if s_train.ndim == 3 and s_train.shape[-1] == 1:
-        s_train = s_train.squeeze(-1)
-    if s_test.ndim == 3 and s_test.shape[-1] == 1:
-        s_test = s_test.squeeze(-1)
+    s_train = combined_output[train_case].astype(np.float32)  # (Ns,N,4) with NaNs on outside
+    s_test  = combined_output[test_case].astype(np.float32)
 
     logging.info(f'branch_condition_input_train.shape = {branch_condition_input_train.shape}')
     logging.info(f'branch_pointnet_input_train.shape = {branch_pointnet_input_train.shape}')
-    logging.info(f'branch_condition_input_test.shape = {branch_condition_input_test.shape}')
-    logging.info(f'branch_pointnet_input_test.shape = {branch_pointnet_input_test.shape}')
     logging.info(f'trunk_input_train.shape = {trunk_input_train.shape}')
-    logging.info(f'trunk_input_test.shape = {trunk_input_test.shape}')
-    logging.info(f's_train.shape = {s_train.shape}')
-    logging.info(f's_test.shape = {s_test.shape}')
+    logging.info(f's_train.shape = {s_train.shape} (NaNs expected on outside)')
 
     x_train = (branch_condition_input_train, branch_pointnet_input_train, trunk_input_train)
     x_test  = (branch_condition_input_test,  branch_pointnet_input_test,  trunk_input_test)
 
-    # ---- ADD: sdf target from trunk_input[...,3] (already scaled by trunk_scaler) ----
-    d_train = trunk_input_train[:, :, 3:4].astype(np.float32)  # (Ns, Npt, 1)
-    d_test  = trunk_input_test[:, :, 3:4].astype(np.float32)   # (Nt, Npt, 1)
+    # sdf target from trunk_input[...,3] (already scaled)
+    d_train = trunk_input_train[:, :, 3:4].astype(np.float32)
+    d_test  = trunk_input_test[:, :, 3:4].astype(np.float32)
 
-    # y = [field(4), sdf(1)] -> (..,5)
+    # y = [field(4 with NaNs), sdf(1)] -> (..,5)
     y_train = np.concatenate([s_train, d_train], axis=2).astype(np.float32)
     y_test  = np.concatenate([s_test,  d_test],  axis=2).astype(np.float32)
-    # -------------------------------------------------------------------------------
+
     logging.info(f'y_train(with sdf).shape = {y_train.shape}')
-    logging.info(f'y_test(with sdf).shape = {y_test.shape}')
 
     return x_train, y_train, x_test, y_test, output_scalers, train_case_file, test_case_file
-
 
 # ============================
 # Data wrapper (modified losses)
@@ -343,138 +374,68 @@ class TripleCartesianProd(Data):
         self.num_train_samples = self.train_x[0].shape[0]
         self.sampler = BatchSampler(self.num_train_samples, shuffle=True)
         self.lambda_nf = lambda_nf
-        self._log_every = 100      # 100 step마다 출력
+        self._log_every = 100
         self._step = 0
 
-    # main.py 안 TripleCartesianProd.losses 를 이걸로 교체
     def losses(self, targets, outputs, loss_fn, inputs, model, aux=None):
-        # targets: (B,N,5) = field(4) + sdf(1)
-        # outputs: (B,N,5)
-        self._step += .5
+        """
+        targets: (B,N,5) = field(4 with NaNs outside) + sdf(1)
+        outputs: (B,N,5)
+        """
+        self._step += 1
 
-        u_gt = targets[:, :, :4]
-        d_gt = targets[:, :, 4]
+        u_gt   = targets[:, :, :4]    # may have NaNs
+        d_gt   = targets[:, :, 4]     # always finite (scaled)
         u_pred = outputs[:, :, :4]
         d_pred = outputs[:, :, 4]
 
-        # 1) field
-        loss_field = torch.mean((u_pred - u_gt) ** 2)
+        # ---- field loss: inside only (where GT is finite) ----
+        mask_gt = torch.isfinite(u_gt).all(dim=-1)          # inside (GT exists)
+        mask_pr = torch.isfinite(u_pred).all(dim=-1)        # pred finite
+        mask = mask_gt & mask_pr
 
-        # 2) sdf supervised (robust)
-        tau = 0.1
-        w = torch.exp(-torch.abs(d_gt) / tau)
-        loss_sdf_data = (w * F.smooth_l1_loss(d_pred, d_gt, reduction="none")).mean()
+        if mask.any():
+            diff = u_pred - u_gt
+            # pow 대신 smooth_l1로 안정화
+            loss_field = torch.mean(diff[mask]**2)
+        else:
+            loss_field = 0.0 * u_pred.mean()
 
-        # zero-level anchor (band)
-        eps = 0.02
-        mask = (torch.abs(d_gt) < eps)
-        loss_zero = (d_pred[mask] ** 2).mean() if mask.any() else 0.0 * d_pred.mean()
+        # ---- sdf supervised: ALL points ----
+        loss_sdf = F.smooth_l1_loss(d_pred, d_gt)
 
-        # 3) eikonal (SDF-ness)
+        # ---- eikonal on random points in normalized xyz space ----
         B = targets.shape[0]
         Ne = 2048
         x_eik = (torch.rand(B, Ne, 3, device=outputs.device) * 2.0 - 1.0).requires_grad_(True)
         x_eik_enc = model.net.trunk_encoding(x_eik.reshape(-1, 3)).reshape(B, Ne, -1)
 
-        # cached latent (avoid recompute)
         latent = getattr(model.net, "_cached_latent", None)
         if latent is None:
             latent = model.net.encoder(inputs[1])
 
-        d_eik = model.net.shape_decoder(latent, x_eik_enc).squeeze(-1)  # (B,Ne)
-        grad = torch.autograd.grad(
-            outputs=d_eik.sum(),
-            inputs=x_eik,
-            create_graph=True,
-            retain_graph=True,
-            only_inputs=True,
-        )[0]
+        d_eik = model.net.shape_decoder(latent, x_eik_enc).squeeze(-1)
+        grad = torch.autograd.grad(d_eik.sum(), x_eik, create_graph=True, retain_graph=True, only_inputs=True)[0]
         loss_eik = ((grad.norm(dim=-1) - 1.0) ** 2).mean()
 
-        # weights (고정)
-        lambda_sdf = 1.0
-        lambda_eik = 0.1
-
-        total = loss_field + lambda_sdf * loss_sdf_data + lambda_eik * loss_eik + loss_zero
+        lambda_sdf = 0.5
+        lambda_eik = 0.05
+        total = loss_field + lambda_sdf * loss_sdf + lambda_eik * loss_eik
 
         if (self._step % self._log_every) == 0:
-            # detach해서 숫자만
-            lf = float(loss_field.detach().cpu())
-            ls = float(loss_sdf_data.detach().cpu())
-            lz = float(loss_zero.detach().cpu()) if isinstance(loss_zero, torch.Tensor) else float(loss_zero)
-            le = float(loss_eik.detach().cpu())
-            lt = float(total.detach().cpu())
-
-            logging.info(f"[loss step {self._step}] total={lt:.6e} | "
-                f"field={lf:.3e} sdf={ls:.3e} zero={lz:.3e} eik={le:.3e} "
-                f"(w_sdf={lambda_sdf}, w_eik={lambda_eik})")
-
+            logging.info(
+                f"[loss step {self._step}] total={float(total.detach().cpu()):.6e} | "
+                f"field={float(loss_field.detach().cpu()):.3e} sdf={float(loss_sdf.detach().cpu()):.3e} "
+                f"eik={float(loss_eik.detach().cpu()):.3e} (mask_in={int(mask.sum().detach().cpu())})"
+            )
         return total
 
-    def losses(self, targets, outputs, loss_fn, inputs, model, aux=None):
-        # targets: (B,N,5) = u(4) + d(1)
-        u_gt = targets[:, :, :4]
-        d_gt = targets[:, :, 4]
-        u_pred = outputs[:, :, :4]
-        d_pred = outputs[:, :, 4]
-
-        # 1) field MSE (원래대로)
-        loss_field = torch.mean((u_pred - u_gt) ** 2)
-
-        # 2) sdf supervised: MSE (원래대로)
-        loss_sdf = torch.mean((d_pred - d_gt) ** 2)
-
-        # 3) eikonal (그대로 유지)
-        B = targets.shape[0]
-        Ne = 2048
-        x_eik = (torch.rand(B, Ne, 3, device=outputs.device) * 2.0 - 1.0).requires_grad_(True)
-        x_eik_enc = model.net.trunk_encoding(x_eik.reshape(-1, 3)).reshape(B, Ne, -1)
-
-        latent = getattr(model.net, "_cached_latent", None)
-        if latent is None:
-            latent = model.net.encoder(inputs[1])
-
-        # IMPORTANT: 아래 shape decoder 출력은 "SDF-SCALAR 적용된 값"이어야 함 (B에서 수정할 거라 자동으로 맞음)
-        d_eik = model.net.shape_decoder(latent, x_eik_enc).squeeze(-1)  # (B,Ne)
-
-        grad = torch.autograd.grad(
-            outputs=d_eik.sum(),
-            inputs=x_eik,
-            create_graph=True,
-            retain_graph=True,
-            only_inputs=True,
-        )[0]
-        loss_eik = ((grad.norm(dim=-1) - 1.0) ** 2).mean()
-
-        # weights (초기 권장값)
-        lambda_sdf = 3.0
-        lambda_eik = 0.8
-
-        if (self._step % self._log_every) == 0:
-            # detach해서 숫자만
-            lf = float(loss_field.detach().cpu())
-            ls = float(loss_sdf.detach().cpu())
-            le = float(loss_eik.detach().cpu())
-
-            logging.info(f"[loss] "
-                f"field={lf:.3e} sdf={ls:.3e} eik={le:.3e} "
-                f"(w_sdf={lambda_sdf}, w_eik={lambda_eik})")
-
-        return loss_field + lambda_sdf * loss_sdf + lambda_eik * loss_eik
-
     def train_next_batch(self, batch_size=None):
-        if not hasattr(self, "_step"):
-            self._step = 0
-        self._step += 1
         if batch_size is None:
             return self.train_x, self.train_y
         indices = self.sampler.get_next(batch_size)
         return (
-            (
-                self.train_x[0][indices],
-                self.train_x[1][indices],
-                self.train_x[2][indices]
-            ),
+            (self.train_x[0][indices], self.train_x[1][indices], self.train_x[2][indices]),
             self.train_y[indices],
         )
 
@@ -738,13 +699,7 @@ def define_model(args, device, data, output_scalers):
         # outputs: (B,N,5), targets: (B,N,5)
         return torch.mean((outputs - targets) ** 2)
 
-    # -------- metrics (field only; slice outputs[:,:,:4]) --------
-    def err_MAE(true_vals, pred_vals):
-        return np.mean(np.abs(true_vals - pred_vals), axis=1)
-
-    def err_RMSE(true_vals, pred_vals):
-        return np.sqrt(np.mean((true_vals - pred_vals) ** 2, axis=1))
-
+        # -------- NaN-safe metrics (field only; ignore outside points) --------
     def to_numpy(d):
         if isinstance(d, torch.Tensor):
             return d.detach().cpu().numpy()
@@ -753,67 +708,73 @@ def define_model(args, device, data, output_scalers):
         else:
             raise TypeError('Data must be a torch.Tensor or np.ndarray.')
 
-    def inv(data_arr, scaler):
-        data_shape = data_arr.shape
-        data_flat = data_arr.reshape(-1, data_shape[-1])
-        data_inv = scaler.inverse_transform(data_flat)
-        return data_inv.reshape(data_shape)
+    def inv_rows(arr_2d, scaler):
+        """Inverse transform on 2D array (K,4)."""
+        return scaler.inverse_transform(arr_2d)
 
-    def ux_MAE(outputs, targets):
-        outputs_np = to_numpy(outputs)[:, :, :4]
-        targets_np = to_numpy(targets)[:, :, :4]
-        true_vals = inv(targets_np, output_scalers)[:, :, 0]
-        pred_vals = inv(outputs_np, output_scalers)[:, :, 0]
-        return np.mean(err_MAE(true_vals, pred_vals))
+    def masked_field_arrays(outputs, targets):
+        """
+        outputs: (B,N,5) or (B,N,4)
+        targets: (B,N,5) or (B,N,4) with NaNs outside
+        Returns:
+          out_m: (K,4) predicted (scaled) on inside points only
+          tgt_m: (K,4) target  (scaled) on inside points only
+        """
+        out_np = to_numpy(outputs)
+        tgt_np = to_numpy(targets)
 
-    def uy_MAE(outputs, targets):
-        outputs_np = to_numpy(outputs)[:, :, :4]
-        targets_np = to_numpy(targets)[:, :, :4]
-        true_vals = inv(targets_np, output_scalers)[:, :, 1]
-        pred_vals = inv(outputs_np, output_scalers)[:, :, 1]
-        return np.mean(err_MAE(true_vals, pred_vals))
+        # keep only field dims
+        if out_np.shape[-1] >= 4:
+            out_f = out_np[:, :, :4]
+        else:
+            raise ValueError("outputs last dim must be >= 4")
+        if tgt_np.shape[-1] >= 4:
+            tgt_f = tgt_np[:, :, :4]
+        else:
+            raise ValueError("targets last dim must be >= 4")
 
-    def uz_MAE(outputs, targets):
-        outputs_np = to_numpy(outputs)[:, :, :4]
-        targets_np = to_numpy(targets)[:, :, :4]
-        true_vals = inv(targets_np, output_scalers)[:, :, 2]
-        pred_vals = inv(outputs_np, output_scalers)[:, :, 2]
-        return np.mean(err_MAE(true_vals, pred_vals))
+        # inside mask: all 4 comps finite
+        mask = np.isfinite(tgt_f).all(axis=-1)  # (B,N)
 
-    def vm_MAE(outputs, targets):
-        outputs_np = to_numpy(outputs)[:, :, :4]
-        targets_np = to_numpy(targets)[:, :, :4]
-        true_vals = inv(targets_np, output_scalers)[:, :, 3]
-        pred_vals = inv(outputs_np, output_scalers)[:, :, 3]
-        return np.mean(err_MAE(true_vals, pred_vals))
+        out2 = out_f.reshape(-1, 4)
+        tgt2 = tgt_f.reshape(-1, 4)
+        m2 = mask.reshape(-1)
 
-    def ux_R2(outputs, targets):
-        outputs_np = to_numpy(outputs)[:, :, :4]
-        targets_np = to_numpy(targets)[:, :, :4]
-        true_vals = inv(targets_np, output_scalers)[:, :, 0]
-        pred_vals = inv(outputs_np, output_scalers)[:, :, 0]
-        return calculate_r2(true_vals, pred_vals)
+        if m2.sum() == 0:
+            # no inside points in this batch (should be rare)
+            return None, None
 
-    def uy_R2(outputs, targets):
-        outputs_np = to_numpy(outputs)[:, :, :4]
-        targets_np = to_numpy(targets)[:, :, :4]
-        true_vals = inv(targets_np, output_scalers)[:, :, 1]
-        pred_vals = inv(outputs_np, output_scalers)[:, :, 1]
-        return calculate_r2(true_vals, pred_vals)
+        return out2[m2], tgt2[m2]
 
-    def uz_R2(outputs, targets):
-        outputs_np = to_numpy(outputs)[:, :, :4]
-        targets_np = to_numpy(targets)[:, :, :4]
-        true_vals = inv(targets_np, output_scalers)[:, :, 2]
-        pred_vals = inv(outputs_np, output_scalers)[:, :, 2]
-        return calculate_r2(true_vals, pred_vals)
+    def mae_comp(comp_idx):
+        def _metric(outputs, targets):
+            out_m, tgt_m = masked_field_arrays(outputs, targets)
+            if out_m is None:
+                return np.nan
+            out_inv = inv_rows(out_m, output_scalers)[:, comp_idx]
+            tgt_inv = inv_rows(tgt_m, output_scalers)[:, comp_idx]
+            return float(np.mean(np.abs(out_inv - tgt_inv)))
+        return _metric
 
-    def vm_R2(outputs, targets):
-        outputs_np = to_numpy(outputs)[:, :, :4]
-        targets_np = to_numpy(targets)[:, :, :4]
-        true_vals = inv(targets_np, output_scalers)[:, :, 3]
-        pred_vals = inv(outputs_np, output_scalers)[:, :, 3]
-        return calculate_r2(true_vals, pred_vals)
+    def r2_comp(comp_idx):
+        def _metric(outputs, targets):
+            out_m, tgt_m = masked_field_arrays(outputs, targets)
+            if out_m is None:
+                return np.nan
+            out_inv = inv_rows(out_m, output_scalers)[:, comp_idx]
+            tgt_inv = inv_rows(tgt_m, output_scalers)[:, comp_idx]
+            return float(calculate_r2(tgt_inv, out_inv))
+        return _metric
+
+    ux_MAE = mae_comp(0)
+    uy_MAE = mae_comp(1)
+    uz_MAE = mae_comp(2)
+    vm_MAE = mae_comp(3)
+
+    ux_R2 = r2_comp(0)
+    uy_R2 = r2_comp(1)
+    uz_R2 = r2_comp(2)
+    vm_R2 = r2_comp(3)
 
     if args.output_components == 'xyzs':
         metrics = [ux_MAE, uy_MAE, uz_MAE, vm_MAE, ux_R2, uy_R2, uz_R2, vm_R2]
@@ -905,7 +866,7 @@ def main():
     set_random_seed()
     device = get_device(args.gpu)
 
-    name = f'DesignGenPointDeepONet_RUN{args.RUN}_D{args.N_samples}_N{args.N_pt}_branchinput_{args.branch_condition_input_components}_trunkinput_{args.trunk_input_components}_output_{args.output_components}_split_{args.split_method}'
+    name = f'Changed_RUN{args.RUN}_D{args.N_samples}_N{args.N_pt}_branchinput_{args.branch_condition_input_components}_trunkinput_{args.trunk_input_components}_output_{args.output_components}_split_{args.split_method}'
     experiment_dir = setup_logging(args, name)
     model_best_path = os.path.join(experiment_dir, 'best_model.pth')
     if os.path.exists(model_best_path):
@@ -915,6 +876,7 @@ def main():
     log_parameters(args, device, name)
 
     x_train, y_train, x_test, y_test, output_scalers, train_case_file, test_case_file = load_and_preprocess_data(args, experiment_dir)
+
 
     # Data wrapper with NF weight
     data = TripleCartesianProd(x_train, y_train, x_test, y_test)
