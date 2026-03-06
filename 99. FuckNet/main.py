@@ -383,7 +383,7 @@ def align_grid_to_rpt(rpt_c, grid_a, grid_b, grid_c):
 # =========================
 def load_and_preprocess_data(args, experiment_dir):
     # --- load Rpt (field/inside points) ---
-    rpt_path = os.path.join(args.dir_base_load_data, f"Rpt{args.RUN}_N{args.N_pt}.npz")
+    rpt_path = os.path.join(args.dir_base_load_data, f"Rpt0_N{args.N_pt}.npz")
     tmp = np.load(rpt_path)
 
     rpt_c = tmp['c']  # filenames/ids

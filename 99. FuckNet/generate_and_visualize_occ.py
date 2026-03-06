@@ -285,7 +285,7 @@ def visualize_generated_surfaces(
     except Exception as e:
         print("[DEBUG] pv.start_xvfb(): SKIP:", e)
 
-    per_subplot_pixel = 300
+    per_subplot_pixel = 500
     num_cols = min(num_samples, len(surface_paths))
     window_width = num_cols * per_subplot_pixel
     window_height = per_subplot_pixel
@@ -329,7 +329,7 @@ def visualize_generated_surfaces(
         plotter.add_text(txt, font_size=10, position="upper_left", shadow=True)
         plotter.add_axes()
 
-    save_path = os.path.join(out_dir, f"generated_{case_key}_{scalar_name}.png")
+    save_path = os.path.join(out_dir, f"0_generated_{case_key}_{scalar_name}.png")
     plotter.render()
     plotter.screenshot(save_path)
     plotter.close()
@@ -338,19 +338,18 @@ def visualize_generated_surfaces(
         print(f"[OK] Visualization saved: {save_path}")
         display(Image(filename=save_path))
 
-    if clim is not None:
+    if False: #clim is not None:
         cb_path = os.path.join(out_dir, f"colorbar_{direction}_{scalar_name}.png")
         save_global_colorbar(clim[0], clim[1], f"{scalar_name} ({direction.upper()})", cb_path)
         if os.path.exists(cb_path):
             display(Image(filename=cb_path))
 
-    import matplotlib.image as mpimg
+    """import matplotlib.image as mpimg
     img = mpimg.imread(save_path)
     plt.figure(figsize=(14, 4))
     plt.axis("off")
     plt.imshow(img)
-    plt.show()
-
+    plt.show()"""
 
 # -------------------------
 # Main
