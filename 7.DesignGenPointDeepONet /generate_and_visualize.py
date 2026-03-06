@@ -460,7 +460,7 @@ def main():
     norm = torch.load(os.path.join(args.experiment_dir, args.nf_latent_norm),
                       map_location="cpu", weights_only=False)
     mu = norm["mu"].to(device)
-    std = norm["std"].to(device)
+    std = 10 #norm["std"].to(device)
     clip_c = float(norm.get("clip", 0.0))
 
     # grid + trunk enc
@@ -473,7 +473,10 @@ def main():
 
     for i in range(args.num_samples):
         with torch.no_grad():
-            x_n = nf.sample(1).to(device)           # (1,D) in normalized latent space
+            # x_n = nf.sample(1).to(device)           # (1,D) in normalized latent space
+            # normalized latent ~ N(0, I)
+            x_n = torch.randn(1, args.latent_dim, device=device)
+
             if clip_c > 0:
                 x_n = x_n.clamp(-clip_c, clip_c)
             latent = x_n * std + mu                 # denorm to latent space

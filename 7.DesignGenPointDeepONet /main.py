@@ -404,6 +404,10 @@ class TripleCartesianProd(Data):
         # ---- sdf supervised: ALL points ----
         loss_sdf = F.smooth_l1_loss(d_pred, d_gt)
 
+        eps = 0.02
+        mask0 = (torch.abs(d_gt) < eps)
+        loss_zero = (d_pred[mask0]**2).mean() if mask0.any() else 0.0*d_pred.mean()
+
         # ---- eikonal on random points in normalized xyz space ----
         B = targets.shape[0]
         Ne = 2048
@@ -418,15 +422,15 @@ class TripleCartesianProd(Data):
         grad = torch.autograd.grad(d_eik.sum(), x_eik, create_graph=True, retain_graph=True, only_inputs=True)[0]
         loss_eik = ((grad.norm(dim=-1) - 1.0) ** 2).mean()
 
-        lambda_sdf = 0.5
-        lambda_eik = 0.05
-        total = loss_field + lambda_sdf * loss_sdf + lambda_eik * loss_eik
+        lambda_sdf = 1
+        lambda_eik = 0.0
+        total = loss_field + lambda_sdf * loss_sdf + lambda_eik * loss_eik + loss_zero/2
 
         if (self._step % self._log_every) == 0:
             logging.info(
                 f"[loss step {self._step}] total={float(total.detach().cpu()):.6e} | "
                 f"field={float(loss_field.detach().cpu()):.3e} sdf={float(loss_sdf.detach().cpu()):.3e} "
-                f"eik={float(loss_eik.detach().cpu()):.3e} (mask_in={int(mask.sum().detach().cpu())})"
+                f"eik={float(loss_eik.detach().cpu()):.3e} zero={float(loss_zero.detach().cpu()):.3e} (mask_in={int(mask.sum().detach().cpu())/int(len(u_gt))})"
             )
         return total
 
