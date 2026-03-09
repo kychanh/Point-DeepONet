@@ -428,6 +428,8 @@ def main():
 
     all_case_keys = sorted(list(xyzd_full.files))
     case_keys = choose_case_keys(all_case_keys, args.num_cases, mode=args.case_mode, seed=args.seed)
+    case_keys = ['ver_107_291','ver_113_129', 'ver_173_59', 'ver_19_321', 'ver_284_378']
+    case_keys = ['dia_138_79', 'dia_147_418', 'dia_19_95', 'dia_245_34', 'dia_247_616']
 
     trunk_encoding, encoder, field_dec = load_direct_modules(args, device, cond_dim=5)
 
